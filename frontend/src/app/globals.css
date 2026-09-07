@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+}
+
+/* Wide content scrolls inside its own container; the page never scrolls sideways. */
+.scroll-x {
+  @apply overflow-x-auto;
+}
+
+.card {
+  @apply rounded-lg border border-surface-border bg-surface-raised;
+}
+
+.card-pad {
+  @apply p-4 sm:p-5;
+}
+
+.label {
+  @apply text-xs font-medium uppercase tracking-wide text-ink-faint;
+}
+
+.stat {
+  @apply font-mono tabular-nums;
+}
+
+.link {
+  @apply text-accent hover:underline underline-offset-2;
+}
+
+table.data {
+  @apply w-full text-sm;
+}
+table.data thead th {
+  @apply sticky top-0 z-10 bg-surface-raised px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-faint;
+}
+table.data tbody td {
+  @apply border-t border-surface-border px-3 py-2;
+}
+table.data tbody tr:hover {
+  @apply bg-surface-overlay;
+}

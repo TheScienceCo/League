@@ -1,0 +1,119 @@
+# Rift Lab — full local stack.
+#
+#   cp .env.example .env
+#   docker compose up --build
+#   docker compose exec api riftlab seed --accounts 40 --matches 16
+#
+# Postgres and Redis carry named volumes so data survives a restart. The api and
+# worker share an image and a models volume, so a model trained by the worker is
+# immediately servable by the api.
+
+name: riftlab
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-riftlab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-riftlab}
+      POSTGRES_DB: ${POSTGRES_DB:-riftlab}
+      # Cuts a meaningful amount of time off timeline bulk inserts and is safe
+      # for a development database.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c work_mem=32MB
+      -c max_wal_size=2GB
+      -c synchronous_commit=off
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-riftlab} -d ${POSTGRES_DB:-riftlab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-riftlab}:${POSTGRES_PASSWORD:-riftlab}@postgres:5432/${POSTGRES_DB:-riftlab}
+      REDIS_URL: redis://redis:6379/0
+      MODEL_DIR: /app/models
+    # Migrations run on start so a fresh clone needs no extra step.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"
+    volumes:
+      - models_data:/app/models
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-riftlab}:${POSTGRES_PASSWORD:-riftlab}@postgres:5432/${POSTGRES_DB:-riftlab}
+      REDIS_URL: redis://redis:6379/0
+      MODEL_DIR: /app/models
+    # The worker exists to run long jobs (ingestion, corpus-wide refreshes,
+    # training) off the request path. It idles until you exec into it:
+    #   docker compose exec worker riftlab refresh-analytics
+    command: ["sleep", "infinity"]
+    volumes:
+      - models_data:/app/models
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      API_INTERNAL_URL: http://api:8000
+      NODE_ENV: production
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api: {condition: service_started}
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  models_data:
