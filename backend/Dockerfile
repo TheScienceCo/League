@@ -36,7 +36,6 @@ WORKDIR /app
 COPY --chown=riftlab:riftlab alembic.ini ./
 COPY --chown=riftlab:riftlab alembic ./alembic
 COPY --chown=riftlab:riftlab app ./app
-COPY --chown=riftlab:riftlab scripts ./scripts
 
 RUN mkdir -p /app/models && chown -R riftlab:riftlab /app/models
 USER riftlab
