@@ -1,53 +1,332 @@
-# Architecture
+# AoE2 Analytics Platform - Architecture
+
+## System Overview
+
+This platform reconstructs complete game state from Age of Empires II replay files and derives comprehensive analytics to quantify player skill and provide actionable coaching insights.
 
 ## Components
 
 | Service | Responsibility |
 | --- | --- |
-| `web` | Next.js App Router. Server components fetch the API directly; client components go through a rewrite so the browser never learns the backend's address. |
-| `api` | FastAPI. HTTP layer only — routers validate, call a service, and serialise. |
-| `worker` | The same image as `api`, idling. Long jobs (ingestion, corpus refreshes, training) are `exec`'d into it so they never share a process with request handling. |
-| `postgres` | System of record. Normalized Riot payloads plus every derived table. |
-| `redis` | Optional. Shared Riot rate-limit budget across processes, and response caching. Every caller degrades gracefully without it. |
+| `web` | Next.js 15 frontend. Server/client components. Search, upload, dashboards, timeline visualization. |
+| `api` | FastAPI. HTTP layer — routers validate, call services, serialize responses. |
+| `worker` | Background job processor. Replay parsing, state reconstruction, metrics calculation happen here asynchronously. |
+| `postgres` | System of record. Normalized replay data, game states, events, metrics, coaching insights. |
+| `redis` | Job queue (Celery-like) and response caching. Used for async replay processing. |
 
-## Why the backend is synchronous
-
-Every request path either does bulk SQL or runs pandas/scikit-learn code that is
-itself blocking. FastAPI executes `def` endpoints in a threadpool, which gives
-the concurrency we need without colouring the entire analytics stack `async`.
-
-The Riot HTTP client *is* async, and runs inside the ingestion pipeline, which is
-where concurrency actually matters: several match fetches in flight under a
-shared rate-limit budget.
-
-## The provider seam
-
-Everything downstream depends on `services.riot.RiotProvider`, a Protocol —
-never on the concrete HTTP client. That buys three things:
-
-1. The ingestion pipeline is unit-testable without network access.
-2. The app is fully runnable without an API key, via `MockRiotProvider`.
-3. Any endpoint whose exact shape is uncertain can be stubbed behind the same
-   interface rather than guessed at.
-
-The interface deliberately exposes no live-game, spectator, or in-progress
-endpoints at all. That is a design constraint, not an oversight.
-
-## Data model
+## Data Pipeline
 
 ```
-summoners ──< league_entries
-    │
-matches ──< match_teams
-    ├──< match_participants          faithful Match-V5 copies
-    ├──< timeline_frames             one row per (participant, minute)
-    ├──< timeline_events             kills, wards, objectives, buildings
-    ├──< participant_features        ← the boundary: everything here is derived
-    ├──< roam_events
-    └──< objective_setups
+Upload Replay File (.aoe2record)
+         ↓
+    Parser Service
+    (aoc-mgz or mock)
+         ↓
+    Event Stream
+   (normalized)
+         ↓
+State Reconstruction
+ (snapshots @ 10s)
+         ↓
+Metrics Calculator
+  (economy, military,
+   scouting, strategic)
+         ↓
+Coaching Report
+   Generator
+         ↓
+  Store in DB
+    + Cache
+         ↓
+  Display in UI
+```
 
-cohort_stats      peer baselines, materialised at several specificities
-map_risk_cells    empirical death-risk surface over a 32x32 grid
+## Service Layer Architecture
+
+### app.services.aoe
+- **parser.py**: Replay file parsing abstraction
+  - Adapter over aoc-mgz library
+  - Deterministic mock for MVP testing
+  - Handles .aoe2record format parsing
+
+### app.services.replay
+- **ingest.py**: Complete processing pipeline orchestration
+  - File validation and storage
+  - Coordinates parser → reconstructor → metrics → reporting
+  - Error handling and retry logic
+- **state_reconstruction.py**: Event → state conversion
+  - Maintains cumulative game state
+  - Generates snapshots at configurable intervals
+  - Tracks resources, population, units, buildings, technologies
+
+### app.services.analytics
+- **metrics.py**: Derives all game metrics from state/events
+  - Economy: TC idle time, resource float, collection rates
+  - Military: units killed/lost, engagement efficiency
+  - Scouting: coverage, discovery timing
+  - Strategic: reaction latency, tempo score
+  - All metrics normalized by Elo cohort and map type
+
+### app.services.coaching
+- **report.py**: Generates human-readable insights
+  - Identifies strengths and weaknesses
+  - Quantifies impact of decisions
+  - Recommends improvements with time estimates
+
+### app.services.feature_engineering
+- Peer comparison baseline calculation
+- Cohort aggregation and percentile ranking
+- Statistical analysis
+
+### app.services.ml (Future)
+- Skill gap identification models
+- Win probability estimation
+- Player archetyping
+
+## Data Model
+
+### Core Tables
+
+```
+players
+  ├─ id (PK)
+  ├─ username (unique)
+  ├─ steam_id (unique, optional)
+  └─ stats (wins, losses, mean_elo)
+
+matches
+  ├─ id (PK)
+  ├─ replay_file_id (FK)
+  ├─ map_type (enum)
+  ├─ duration_seconds
+  └─ player_count
+
+match_players (junction)
+  ├─ match_id (PK, FK)
+  ├─ player_id (PK, FK)
+  ├─ civilization
+  ├─ team
+  ├─ result (win/loss/draw)
+  └─ elo_before, elo_after
+
+replay_files
+  ├─ id (PK)
+  ├─ match_id (FK)
+  ├─ file_hash (unique)
+  ├─ storage_path
+  └─ status (uploaded → parsing → parsed → analyzed → completed)
+
+events
+  ├─ id (PK)
+  ├─ match_id (FK)
+  ├─ player_id (FK)
+  ├─ timestamp_ms
+  ├─ event_type (enum)
+  └─ data (JSON)
+
+game_states
+  ├─ id (PK)
+  ├─ match_id (FK)
+  ├─ player_id (FK)
+  ├─ timestamp_ms
+  └─ snapshot (JSON: age, resources, units, buildings, etc.)
+
+engagements
+  ├─ id (PK)
+  ├─ match_id (FK)
+  ├─ start/end timestamps
+  ├─ participants
+  └─ outcome metrics (value killed/lost)
+
+match_metrics
+  ├─ id (PK)
+  ├─ match_id (FK, unique)
+  ├─ player_id (FK)
+  ├─ tc_idle_time_ms
+  ├─ resource_float_peak/average
+  ├─ age_up_timing_ms
+  ├─ military_value_killed/lost
+  ├─ engagement_efficiency
+  ├─ scouting_coverage_percent
+  └─ [30+ derived metrics]
+
+player_metric_percentiles
+  ├─ player_id (FK)
+  ├─ metric_name
+  ├─ elo_band_min/max
+  ├─ percentile_rank (0-100)
+  └─ cohort_size
+
+coaching_insights
+  ├─ match_id (FK)
+  ├─ player_id (FK)
+  ├─ category (economy, military, build, etc.)
+  ├─ title & description
+  ├─ magnitude
+  ├─ recommendation
+  └─ estimated_impact
+```
+
+### Key Design Decisions
+
+**JSON Columns**
+- Events and game states stored as JSON for flexibility
+- Avoids premature schema rigidity
+- Allows parser improvements without migrations
+
+**Feature Versioning**
+- All metrics tagged with version
+- Enables reproducible historical analysis
+- Supports model iteration
+
+**Denormalized Stats**
+- Player wins/losses cached at player level
+- Materialized cohort percentiles (periodic refresh)
+- Trades space for query speed on dashboards
+
+## API Routes
+
+```
+POST   /api/v1/aoe2/replays/upload
+GET    /api/v1/aoe2/replays/{id}/status
+GET    /api/v1/aoe2/replays/{id}/download
+
+GET    /api/v1/aoe2/matches/{id}
+GET    /api/v1/aoe2/matches/{id}/detail
+GET    /api/v1/aoe2/matches/{id}/metrics/{player_id}
+GET    /api/v1/aoe2/matches/{id}/timeline/{player_id}
+GET    /api/v1/aoe2/matches/{id}/events/{player_id}
+
+GET    /api/v1/players/{id}
+GET    /api/v1/players/{id}/matches
+GET    /api/v1/players/{id}/metrics
+
+GET    /api/v1/analytics/percentiles
+GET    /api/v1/analytics/skill-gap/{player_id}
+
+GET    /health
+```
+
+## Processing Pipeline
+
+### Stage 1: Upload & Validation
+- File size check (max 100MB)
+- Format validation (.aoe2record)
+- Hash calculation for deduplication
+- Storage to `/data/replays/{hash}/`
+
+### Stage 2: Parsing
+- Extract action IDs, timestamps, player IDs from binary
+- Parse game events (build, unit creation, death, etc.)
+- Extract metadata (map, duration, players, civs)
+- Output: Normalized event list + metadata
+
+### Stage 3: State Reconstruction
+- Process events chronologically
+- Maintain cumulative state per player
+- Generate snapshots every N seconds (default 10s)
+- Calculate derived values (army value, economy value)
+
+### Stage 4: Metrics Calculation
+- Analyze state snapshots and events
+- Compute 30+ metrics per player
+- Compare against peer cohorts
+- Generate percentile ranks
+
+### Stage 5: Coaching Report
+- Identify strengths (top 3)
+- Identify mistakes (top 3)
+- Recommend improvements (top 3)
+- Estimate Elo-equivalent performance
+
+### Stage 6: Storage
+- Insert into database (atomic transaction)
+- Cache percentiles in Redis
+- Mark replay processing complete
+
+## Testing Strategy
+
+### Unit Tests
+- Parser: mock generates valid replay structure
+- State Reconstruction: events → correct state changes
+- Metrics: specific calculations (TC idle time, etc.)
+- Coaching: report generation and formatting
+
+### Integration Tests
+- End-to-end replay processing pipeline
+- Database round-trip
+- API endpoint responses
+
+### Test Data
+- Mock replay with known metrics (deterministic)
+- Sample replays in `data/samples/`
+- Synthetic player histories for cohort testing
+
+## Frontend Architecture
+
+### Pages
+
+| Route | Purpose |
+| --- | --- |
+| `/` | Landing page, player search, recent games |
+| `/players/:id` | Player dashboard, stats, trends |
+| `/players/:id/matches` | Recent match list with quick stats |
+| `/matches/:id` | Full match analysis with timeline |
+| `/skill-gap/:id` | Radar chart showing skill dimensions |
+| `/upload` | Replay upload form with drag-and-drop |
+
+### Key Components
+- `TimelineChart` — Game progress visualization
+- `EconomyGraph` — Resource collection/spending over time
+- `SkillRadar` — Skill gap percentiles
+- `MetricsTable` — Detailed metric display
+- `EventList` — Chronological event stream
+
+## Deployment & Scalability
+
+### Docker Compose (Development)
+```
+postgres:15
+redis:7
+api:8000 (FastAPI)
+worker:background
+web:3000 (Next.js)
+```
+
+### Production Considerations
+- Database: PostgreSQL 15+, connection pooling
+- Cache: Redis for response caching and job queue
+- Async: Background worker for heavy jobs
+- CDN: Static frontend assets
+- Monitoring: Application logs, database metrics
+
+### Performance
+- Event indexing by match_id, timestamp
+- Metric queries join match_metrics + player_metric_percentiles
+- Caching: Recent player stats (1hr TTL), cohort percentiles (24hr)
+- Batch inserts for events and game states
+
+## Reproducibility & Determinism
+
+- **No randomness** in core calculations
+- Same replay file → identical metrics every time
+- Feature versioning enables metric recomputation
+- ML components clearly marked as estimates
+- Confidence intervals on model predictions
+
+## Error Handling
+
+- Graceful degradation: missing replay parser → mock used
+- Partial analysis: if state reconstruction fails, store raw events
+- Retry logic: transient parsing errors retry automatically
+- User feedback: clear error messages for invalid uploads
+
+## Security & Privacy
+
+- File hash verification (SHA256)
+- Max file size enforcement
+- No storage of credentials or API keys
+- Replay file hash-based organization (prevents path traversal)
 ml_models         registry: metrics, importances, artifact paths
 ingest_jobs       job tracking for the async ingestion API
 ```
