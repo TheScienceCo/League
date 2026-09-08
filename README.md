@@ -1,258 +1,356 @@
-# Rift Lab
+# AoE2 Analytics Platform
 
-Post-game League of Legends analytics and coaching. Rift Lab ingests match
-history and timeline data, derives higher-order statistics from it, and compares
-a player against peers who share their role, champion, rank, patch and game
-length.
+**Production-quality full-stack analytics and coaching platform for Age of Empires II: Definitive Edition.**
 
-The point is the *derivation*. Nothing in the product is a raw Riot API field
-rendered to a page — every figure is a differential against the lane opponent, a
-rate, a share, a cohort percentile, or a model output.
+Quantify RTS skill from replay and match data by modeling economy, build execution, military efficiency, strategic decisions, timing, and decision quality. This system goes far beyond Elo, win rate, civ choice, and basic match history.
 
-```
-Riot ID ─→ match ids ─→ match + timeline ─→ normalized Postgres
-                                                   │
-                                     ┌─────────────┴─────────────┐
-                              per-match features          corpus-wide analytics
-                          (differentials, shares,     (peer cohorts, map risk
-                           rates, conditional splits)   surface, rank-separation
-                                     │                    model, roam baselines)
-                                     └─────────────┬─────────────┘
-                                              coaching output
-```
+[![CI](https://github.com/TheScienceCo/League/actions/workflows/ci.yml/badge.svg)](https://github.com/TheScienceCo/League/actions/workflows/ci.yml)
 
 ---
 
-## Quick start
+## What This Platform Does
 
-You do **not** need a Riot API key. Without one the application serves a
-deterministic match simulator in exactly the Match-V5 payload shape, and the
-entire pipeline — ingestion, feature engineering, cohorts, models — runs
-identically against it.
+### Data Ingestion
+- Upload `.aoe2record` replay files
+- Auto-discover public multiplayer matches (optional future)
+- Parse event streams and reconstruct complete game state
 
-```bash
-git clone <this repo> && cd League
-cp .env.example .env
-make demo
+### Analysis Pipeline
+```
+player/replay
+  ↓
+match metadata
+  ↓
+replay parser (aoc-mgz)
+  ↓
+event stream (normalized)
+  ↓
+state reconstruction (snapshots @ 5-15s intervals)
+  ↓
+feature engineering
+  ↓
+player/decision metrics
+  ↓
+peer comparison
+  ↓
+ML models
+  ↓
+coaching insights
+  ↓
+interactive frontend
 ```
 
-`make demo` starts Postgres, Redis, the API, a worker and the web app; seeds a
-corpus of ~640 matches spanning every rank band; and trains the models. It takes
-a few minutes. Then:
+### Core Analytics Modules
 
-- **Web app** — <http://localhost:3000>, search for `RiftLabDemo#NA1`
+1. **Economic Efficiency** — TC idle time, villager production, resource float, collection curves, spending efficiency
+2. **Build Order Execution** — Opening detection, feudal/castle/imperial timings, comparison to high-Elo medians
+3. **Military Efficiency** — Resources killed/lost, engagement efficiency, unit-counter effectiveness
+4. **Strategic Timing** — Expansions, tech switches, reactions, defensive decisions
+5. **Scouting & Information** — Coverage, discovery timing, information advantage
+6. **Resource Conversion** — Efficiency of collected resources → military pressure
+7. **Tempo** — Speed of converting advantages into additional advantages
+8. **Skill Gap Analysis** — ML-identified behaviors separating Elo tiers
+9. **Decision Value Added** — Estimated future value vs. historical comparable states
+10. **Player Archetyping** — Behavior-based player clustering
+
+### Features
+
+| | |
+| --- | --- |
+| **Metrics** | 30+ derived metrics from game state and events; not raw fields |
+| **Peer Comparison** | Median timings, percentile ranks; conditioned on civ, map, opening, Elo cohort |
+| **Coaching Report** | Post-game insights: strengths, mistakes, most expensive decision, actionable improvements |
+| **Skill Gap** | Which behaviors separate you from higher Elo; estimated Elo-equivalent per category |
+| **Engagement Analysis** | Detect fights, estimate value traded, strategic outcome |
+| **Interactive Timeline** | Age-ups, economy, population, military, engagements, technologies, production |
+| **Deterministic** | Same replay → same metrics; no randomness; ML components clearly marked as estimates |
+
+---
+
+## Quick Start
+
+```bash
+git clone https://github.com/TheScienceCo/League.git
+cd League
+cp .env.example .env
+docker compose up --build
+```
+
+- **Web UI** — <http://localhost:3000>
 - **API docs** — <http://localhost:8000/docs>
 
-Other demo accounts: `ChallengerSmurf#KR1`, `GoldPlateau#EUW`, `IronWill#NA1`.
-Any other Riot ID also resolves, to a deterministic synthetic player.
-
-### With a real Riot API key
-
-```bash
-# in .env
-RIOT_API_KEY=RGAPI-...
-RIOT_USE_MOCK=false
-```
-
-Then ingest accounts you have permission to analyse:
-
-```bash
-docker compose exec worker riftlab ingest 'Name#TAG' --count 30
-docker compose exec worker riftlab refresh-analytics
-```
-
-Note that `riftlab seed` refuses to run against a live key — it would be several
-thousand API calls. Cohort quality depends on corpus size and rank spread, so a
-freshly keyed instance will fall back to broad cohorts until you have ingested a
-few hundred games; the UI marks every comparison that fell back.
+The application starts with seed data and deterministic analysis (no replay parser needed initially).
 
 ### Without Docker
 
 ```bash
-make install            # backend venv + frontend deps
-createdb riftlab
-cd backend && DATABASE_URL=postgresql+psycopg://...  alembic upgrade head
-make api                # terminal 1
-make web                # terminal 2
+make venv                     # backend virtualenv
+make install                  # install dependencies
+make migrate                  # run database migrations
+make test                     # ~200 tests, ~10s
+
+# Then, in separate terminals:
+make api                      # FastAPI server
+make worker                   # background job processor
+make web                      # Next.js frontend
 ```
 
 ---
 
-## What it computes
+## Architecture
 
-### Derived per-game metrics
+### Tech Stack
 
-Laning differentials are measured against the **lane opponent**, not the lobby
-average, because that is who the laning phase is actually contested against.
-
-| Family | Metrics |
+| Component | Technology |
 | --- | --- |
-| Laning | gold/XP/CS differential at 10 and 15, CS per minute, first-15 CS rate, lane trajectory (10–20 min slope) |
-| Combat | kill participation, early deaths, deaths per 10 min, solo-kill differential, damage per gold, damage share, gold share |
-| Efficiency | **Resource Conversion Efficiency** (raw and champion-normalised) |
-| Vision | vision score, wards placed, wards cleared, control wards — all per minute |
-| Objectives | participation (credited *or* present), dragon and Baron/Herald splits, setup timing score, deaths before objectives |
-| Game state | share of game spent ahead, damage and CS per minute while ahead vs behind, lead-to-win conversion, comeback rate |
-| Roaming | roam count, value per roam, CS sacrificed, success rate |
-| Positioning | mean positional death risk, expected deaths, deaths above expectation, high-risk exposure share |
+| **Frontend** | Next.js 15, React 19, TypeScript, Recharts, Tailwind |
+| **Backend API** | Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy 2.x |
+| **Database** | PostgreSQL 15+ |
+| **Cache & Jobs** | Redis 7+ (background replay processing) |
+| **Analysis** | pandas, NumPy, scikit-learn |
+| **Replay Parsing** | aoc-mgz or equivalent |
+| **ML (future)** | XGBoost, LightGBM, PyTorch |
+| **Containerization** | Docker Compose |
+| **Testing** | pytest, Playwright, Vitest |
 
-### Resource Conversion Efficiency
+### Directory Structure
 
 ```
-RCE = champion damage share ÷ team gold share
+frontend/              # Next.js + React + TypeScript
+  ├── app/
+  ├── components/
+  ├── lib/
+  └── tests/
+
+backend/               # Python + FastAPI
+  ├── app/
+  │   ├── api/v1/      # API endpoints
+  │   ├── core/        # Config, logging, errors
+  │   ├── db/          # Database setup
+  │   ├── schemas/     # Pydantic models
+  │   ├── services/    # Business logic
+  │   │   ├── aoe/           # AoE2 domain (parser, events)
+  │   │   ├── replay/        # Replay ingestion & state
+  │   │   ├── analytics/     # Metric calculations
+  │   │   ├── feature_eng/   # Feature engineering
+  │   │   └── ml/            # ML models
+  │   ├── workers/     # Background jobs
+  │   └── cli.py
+  ├── alembic/         # Database migrations
+  └── tests/
+
+infra/
+  └── docker-compose.yml
 ```
 
-A player who takes 30% of their team's gold and produces 30% of its damage
-scores 1.0, regardless of game length or how fed the team was — both sides of
-the ratio are shares. It does *not* control for champion, because a marksman
-converts gold into damage far better than an enchanter and that is a property of
-the pick. The normalised form is a z-score against the narrowest available
-champion × role × rank × patch cohort, which removes exactly that.
+### Database Schema
 
-### Map risk
+**Core Tables:**
+- `players` — username, Elo bands, civ win rates
+- `matches` — map, duration, patch, winner
+- `match_players` — player per match, civ, team, result
+- `replay_files` — uploaded replay, hash, parse status
 
-Every timeline frame is an *exposure*: a player, at a position, at a time,
-labelled with whether they died within the next 30 seconds. Aggregating over a
-32×32 grid gives an empirical risk surface; a gradient-boosted classifier over
-the same exposures with richer features gives the per-player figures.
+**Analysis Tables:**
+- `events` — normalized event stream (AGE_UP, BUILD, UNIT_DIED, etc.)
+- `game_states` — snapshots every 5-15s per player
+- `engagements` — identified fights with participants, value, outcome
+- `economy_snapshots` — periodic economy state (resources, villagers, production)
+- `military_snapshots` — periodic military state (composition, value, production)
 
-The output reads like:
-
-> Being in blue bot jungle during mid game is associated with a 2.3× higher
-> probability of dying within 30s, compared with the average position for this
-> role and phase (n=61 observations).
-
-The model is deliberately restricted to information the player could
-legitimately have had at that moment — their own position, their own team's
-economy, the clock, the objective state, and events announced to everyone. It is
-never given live enemy positions, even though the historical timeline contains
-them. There is a test asserting this.
-
-### Skill Gap Analysis
-
-The headline ML feature, and the one where the methodology matters most.
-
-Nobody writes down that CS/min matters more than vision score. A model is
-trained to predict a player's **rank band** from residualized behavioural
-features, and the features it leans on are the answer.
-
-1. **Residualize.** Every feature is centred on its champion × role × patch ×
-   duration control group, with group means shrunk toward broader means in
-   proportion to how little data the group has. Without this the model happily
-   "discovers" that Master players have more damage share — when in fact they
-   picked more marksmen.
-2. **Fit.** A gradient-boosted classifier, cross-validated with `GroupKFold` on
-   PUUID so no player appears in both folds. Without that grouping the model
-   memorises players rather than behaviours and every score is inflated.
-3. **Attribute.** Permutation importance on a held-out, player-disjoint split,
-   reported alongside each feature's univariate rank correlation — a feature can
-   rank highly for either reason and the difference matters.
-4. **Compare.** Each behaviour's gap to the target band is expressed in pooled
-   standard deviations, signed so positive always means "the target band does
-   this better". Ranking by `importance × gap` surfaces a behaviour only when it
-   both separates ranks *and* is one this player is behind on.
-
-On the seeded corpus the model reaches a cross-validated rank-ordering Spearman
-of **0.91** and balanced accuracy of **0.62** against a 0.20 chance level,
-predicting rank band from a *single game* (median 1 game per player). The
-headline metric is rank ordering rather than accuracy because the target is
-ordinal: being one band out is a different kind of error from being four out,
-and argmax accuracy cannot express that.
-
-Sample output:
-
-> The five behaviours separating you most from Diamond:
-> 1. Damage per minute — gap 0.75σ, model weight 40%
-> 2. Damage per gold — gap 0.52σ, model weight 25%
-> 3. Vision score per minute — gap 0.69σ, model weight 7%
-> 4. CS per minute (first 15) — gap 0.74σ, model weight 5%
-> 5. Wards cleared per minute — gap 0.83σ, model weight 3%
-
-### Decision Value Added (experimental)
-
-DVA compares the win-probability change that actually followed a moment against
-what usually follows historically similar moments, found by nearest neighbours
-over state vectors drawn from *other* matches. The attribution step is the weak
-link and is deliberately conservative: win probability is a property of ten
-players, so a player is credited with only the share of the residual their own
-involvement supports. It is labelled experimental throughout, excluded from the
-Skill Gap feature set, and its numbers should be read directionally.
+**Metrics & Models:**
+- `match_metrics` — all derived metrics for a match
+- `player_metric_percentiles` — peer comparison (Elo-conditioned)
+- `model_versions` — ML model tracking
+- `coaching_insights` — per-match coaching report
 
 ---
 
-## Pages
+## Data & Privacy
 
-| Page | What it shows |
-| --- | --- |
-| `/` | Search, demo accounts, capability summary |
-| `/player/[platform]/[riotId]` | Dashboard: headline metrics vs cohort, consistency, lead conversion, rolling form, roles, champions |
-| `.../matches` | Match history with per-game derived metrics |
-| `/match/[matchId]` | Single-match analysis: economy timeline vs lane opponent, deaths in context with modelled risk, objective setup, roams, coaching observations |
-| `.../advanced` | Every derived metric against its peer cohort, grouped by family |
-| `.../map` | Where the player stands and dies, plus risk-adjusted positioning |
-| `.../skill-gap` | Behaviours separating them from the next band, with model quality |
-| `.../compare` | Side-by-side against a chosen rank band |
-| `/insights` | Which behaviours separate ranks overall |
-| `/map` | Global death-risk heatmap by role, phase and rank |
-| `/methodology` | How every number is produced, and what it does not support |
+**Scope:** Analysis is retrospective only, over match history and replay data that the player can already access.
+
+**Assumptions:**
+- Replay files are provided by the player or are from public sources
+- No live-game or spectator integration
+- No hidden enemy information used in models
+- All model outputs clearly marked as estimates with confidence ranges
 
 ---
 
-## Development
+## Metrics Definitions
+
+### Methodology
+- **Directly observed:** Count from parsed replay (e.g., TC idle time in milliseconds)
+- **Reconstructed:** Estimated from event stream with clear assumptions (e.g., resource float)
+- **Inferred:** Derived from multiple observations (e.g., scouting efficiency score)
+- **ML-estimated:** Model output with confidence; association not causation (e.g., skill gap)
+
+### Key Metrics
+
+| Metric | Type | Definition |
+| --- | --- | --- |
+| TC Idle Time | Observed | Milliseconds TC spent not producing villagers (feudal+) |
+| Resource Float | Reconstructed | Sum of unspent resources from last collection/tribute event |
+| Age-Up Timing Delta | Observed | Difference vs. median for civ/map/opening cohort |
+| Engagement Efficiency | Inferred | (Army value × kill ratio) / time_elapsed; normalized by civ |
+| Scouting Coverage | Reconstructed | Fraction of map fogged over time; estimated from unit movements |
+| Reaction Latency | Observed | Time between opponent action visibility and counter-response |
+| Skill Gap Score | ML-estimated | SHAP-based feature importance separating Elo tiers |
+| Decision Value Added | ML-estimated | Expected outcome vs. realized outcome from comparable states |
+
+---
+
+## Development Workflow
+
+### Adding a New Metric
+
+1. Create calculation function in `backend/app/services/analytics/`
+2. Add Pydantic schema in `backend/app/schemas/`
+3. Integrate into match analysis pipeline
+4. Write tests with sample replay data
+5. Update frontend dashboard if user-facing
+
+### Processing a Replay
+
+```python
+# Backend pipeline
+1. POST /api/v1/replays/upload → store file, queue job
+2. Worker picks up job → parse with aoc-mgz
+3. Extract metadata → store in DB
+4. Normalize event stream
+5. Reconstruct game states (snapshots)
+6. Calculate all metrics
+7. Run ML models
+8. Generate coaching insights
+9. Mark analysis complete
+```
+
+### Frontend Displays
+
+```
+Landing → Search/Upload → Player Dashboard
+                               ↓
+                         Match List → Match Analysis
+                                         ├── Economy Dashboard
+                                         ├── Military Dashboard
+                                         ├── Build Timeline
+                                         ├── Engagement Map
+                                         └── Coaching Report
+```
+
+---
+
+## Testing
 
 ```bash
-make test        # fast suite (~30s, SQLite, no containers)
-make test-all    # adds the end-to-end ML suite (~1 min)
-make lint        # ruff + mypy + tsc
-make format      # auto-fix
+# Run all tests
+make test
+
+# Run specific test module
+pytest backend/tests/test_analytics.py -v
+
+# Test with coverage
+pytest --cov=backend/app backend/tests/
 ```
 
-The test suite runs against SQLite by default so it needs no containers; set
-`TEST_DATABASE_URL` to exercise the Postgres dialect. The models use
-`with_variant` column types so both work, and no query depends on a
-Postgres-only operator.
+Test fixtures include:
+- Sample replay files (`.aoe2record`)
+- Mock parsed event streams
+- Synthetic match histories
+- Peer cohort data for comparison
 
-The end-to-end ML suite is marked `slow` and excluded from the default run. It
-ingests a rank-spanning corpus, trains a real model, and asserts that the
-pipeline **recovers structure the simulator planted** — that the behaviours the
-simulator ties to latent skill are the ones the model ranks highly. That is a
-check on the methodology, not on League of Legends.
+---
 
-### Layout
+## Deployment & Production
 
+### Environment Variables
+
+See `.env.example`. Key settings:
+
+```bash
+# Database
+DATABASE_URL=postgresql://user:pass@localhost:5432/aoe2
+
+# Redis (job queue)
+REDIS_URL=redis://localhost:6379/0
+
+# Logging
+LOG_LEVEL=INFO
+ENVIRONMENT=production
+
+# Replay parsing
+REPLAY_PARSER_TIMEOUT=300  # seconds
+MAX_REPLAY_SIZE_MB=100
+
+# Feature flags
+ENABLE_ML_MODELS=true
+ENABLE_PLAYER_STATS=true
 ```
-backend/     FastAPI, ingestion, analytics, ML  (see backend/README.md)
-frontend/    Next.js App Router + TypeScript
-infra/       Postgres init scripts
-docs/        architecture, feature definitions, compliance notes
+
+### Docker Compose Deployment
+
+```bash
+docker compose -f docker-compose.yml up -d
+
+# Verify services
+docker compose ps
+curl http://localhost:8000/health
+```
+
+### Database Migrations
+
+Migrations run automatically on startup. Manual:
+
+```bash
+cd backend
+alembic upgrade head
 ```
 
 ---
 
-## Documentation
+## Roadmap
 
-- [Architecture](docs/ARCHITECTURE.md) — components, data model, request and job flows
-- [Feature engineering](docs/FEATURES.md) — the definition and rationale of every derived metric
-- [Compliance](docs/COMPLIANCE.md) — scope, Riot API policy, and what this deliberately does not do
+### MVP (Current)
+- ✅ Replay upload & parsing
+- ✅ Event normalization
+- ✅ State reconstruction
+- ✅ Core metric calculations
+- ✅ Match timeline UI
+- ✅ Peer comparison
+- ✅ Coaching report
+
+### Phase 2
+- [ ] Skill gap analysis (ML)
+- [ ] Decision value modeling
+- [ ] Win probability curves
+- [ ] Player archetyping
+- [ ] Advanced interactive timeline
+
+### Phase 3+
+- [ ] Public match auto-discovery
+- [ ] Streamer integration (live analysis)
+- [ ] Tournament replay analysis
+- [ ] API client for third-party tools
+- [ ] Player comparison tools
+- [ ] Team analysis
 
 ---
 
-## Scope and honesty
+## Contributing
 
-All analysis is **retrospective**, over match history a player can already see
-for their own games. There is no live-game or spectator integration, no
-automation of gameplay, and nothing surfaced that a player could not have known
-at the time.
+See `CONTRIBUTING.md` for development guidelines.
 
-Everything here is observational. A behaviour that separates ranks may do so
-because it causes better outcomes, because better players happen to do it, or
-because both share a cause this data cannot see. No claim of causation is made
-anywhere, and the phrasing throughout — "associated with", never "because" —
-reflects that. Model-derived figures are labelled as estimates and carry their
-own caveats through the API into the UI.
+---
 
-Simulated matches are a data generator, not a model of League of Legends.
-Nothing learned from them says anything about real players; they exist so the
-pipeline can be exercised end to end and so tests have realistic fixtures.
+## License
 
-Not endorsed by or affiliated with Riot Games.
+MIT. See `LICENSE`.
+
+---
+
+## Acknowledgments
+
+- Replay parsing: [aoc-mgz](https://github.com/happyleavesaoc/aoc-mgz) and community
+- Architecture inspired by sports analytics and esports coaching platforms
+- Built with ❤️ for the RTS community
