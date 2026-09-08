@@ -4,11 +4,11 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "Rift Lab — League analytics & coaching",
-    template: "%s · Rift Lab",
+    default: "AoE2 Analytics — Replay analysis & coaching",
+    template: "%s · AoE2 Analytics",
   },
   description:
-    "Post-game League of Legends analytics: derived metrics, peer cohorts, map risk modelling and skill-gap analysis.",
+    "Post-game Age of Empires II analytics: economy, military, scouting metrics, peer comparison, and coaching insights from replay analysis.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -22,17 +22,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 aria-hidden
                 className="inline-block h-5 w-5 rounded bg-gradient-to-br from-accent to-accent-soft"
               />
-              Rift Lab
+              AoE2 Analytics
             </Link>
             <nav className="flex items-center gap-4 text-sm text-ink-muted">
-              <Link href="/insights" className="hover:text-ink">
-                Rank separation
-              </Link>
-              <Link href="/map" className="hover:text-ink">
-                Map risk
+              <Link href="/upload" className="hover:text-ink">
+                Upload Replay
               </Link>
               <Link href="/methodology" className="hover:text-ink">
                 Methodology
+              </Link>
+              <Link href="https://github.com/thescienceco/league" className="hover:text-ink">
+                GitHub
               </Link>
             </nav>
           </div>
@@ -40,9 +40,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
         <footer className="mx-auto max-w-7xl px-4 pb-10 pt-4 text-xs text-ink-faint">
           <p>
-            Post-game analysis of publicly available match history. Model-derived
-            figures are estimates describing association, not causation. Not
-            endorsed by or affiliated with Riot Games.
+            Replay analysis is retrospective and based on match data that players can already access.
+            Model-derived figures (ML estimates) describe association, not causation.
+            Not endorsed by or affiliated with Microsoft or Relic Entertainment.
           </p>
         </footer>
       </body>
