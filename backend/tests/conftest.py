@@ -51,8 +51,12 @@ def engine():
             "poolclass": StaticPool,
         }
     eng = create_engine(TEST_DATABASE_URL, future=True, **kwargs)
+    # An in-memory SQLite engine starts empty, but a real Postgres database
+    # persists between tests - so drop first, or rows leak across the suite.
+    Base.metadata.drop_all(eng)
     Base.metadata.create_all(eng)
     yield eng
+    Base.metadata.drop_all(eng)
     eng.dispose()
 
 
