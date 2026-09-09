@@ -40,9 +40,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
         <footer className="mx-auto max-w-7xl px-4 pb-10 pt-4 text-xs text-ink-faint">
           <p>
-            Replay analysis is retrospective and based on match data that players can already access.
-            Model-derived figures (ML estimates) describe association, not causation.
-            Not endorsed by or affiliated with Microsoft or Relic Entertainment.
+            Analysis is derived from replay files, which record player commands rather
+            than game outcomes. Figures marked <em>inferred</em> or <em>reconstructed</em>
+            are estimates, not measurements. Not endorsed by or affiliated with Microsoft
+            or Xbox Game Studios.
           </p>
         </footer>
       </body>

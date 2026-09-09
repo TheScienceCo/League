@@ -1,138 +1,128 @@
 import Link from "next/link";
 
-import { SearchForm } from "@/components/search-form";
-import { Card, Disclaimer } from "@/components/ui";
-import { api } from "@/lib/api";
-import { tierLabel } from "@/lib/format";
-import type { PlayerSummary } from "@/lib/types";
+export const metadata = {
+  title: "AoE2 Analytics — replay analysis",
+  description:
+    "Upload an Age of Empires II replay and get age timings, a banked-resource curve, build order and quantified observations.",
+};
 
-export const dynamic = "force-dynamic";
-
-const DEMO_ACCOUNTS = [
-  { riotId: "RiftLabDemo#NA1", platform: "na1", note: "Platinum mid-table" },
-  { riotId: "ChallengerSmurf#KR1", platform: "na1", note: "Master+" },
-  { riotId: "GoldPlateau#EUW", platform: "na1", note: "Gold" },
-  { riotId: "IronWill#NA1", platform: "na1", note: "Iron" },
+/** What the parser can actually recover from a replay file today. */
+const WORKS = [
+  {
+    title: "Age timings",
+    body: "Feudal, Castle and Imperial to the second, plus the gap to your opponent. Read from the game's own age transitions, so these are exact.",
+    tag: "observed",
+  },
+  {
+    title: "Banked resources over time",
+    body: "A curve of everything sitting unspent, and which age you were least efficient in. Combined across all four resources — the per-type split is not transmitted.",
+    tag: "inferred",
+  },
+  {
+    title: "Build order",
+    body: "Every building you placed, when and where, and the opening that implies.",
+    tag: "observed",
+  },
+  {
+    title: "Production gaps",
+    body: "The longest stretch you went without queuing a villager — a proxy for an idle Town Center.",
+    tag: "reconstructed",
+  },
+  {
+    title: "Effective APM",
+    body: "Meaningful commands per minute, with duplicate and spam orders excluded.",
+    tag: "observed",
+  },
+  {
+    title: "Quantified observations",
+    body: "Plain-language notes, each tied to a number that was actually measured. No generic advice.",
+    tag: "derived",
+  },
 ];
 
-const CAPABILITIES = [
-  {
-    title: "Derived, not displayed",
-    body: "Gold and XP differentials against the lane opponent, damage per gold, damage share versus gold share, objective participation, vision rates — computed from match and timeline data rather than read off a scoreboard.",
-  },
-  {
-    title: "Resource Conversion Efficiency",
-    body: "Output share divided by resource share, then normalised against champion, role, rank, patch and game length. A player who takes 30% of the gold and produces 30% of the damage scores 1.0, whatever they play.",
-  },
-  {
-    title: "Map risk modelling",
-    body: "Every timeline frame is an exposure labelled with whether a death followed within 30 seconds. The result is a risk surface by region and game phase, and a per-player figure for deaths beyond what positioning implied.",
-  },
-  {
-    title: "Skill gap analysis",
-    body: "Nothing is hard-coded about what makes a player good. A model is trained to separate rank bands from residualized behaviour, and the behaviours it leans on are the answer.",
-  },
-];
+const TAG_STYLE: Record<string, string> = {
+  observed: "bg-emerald-500/15 text-emerald-500",
+  inferred: "bg-amber-500/15 text-amber-500",
+  reconstructed: "bg-sky-500/15 text-sky-500",
+  derived: "bg-violet-500/15 text-violet-400",
+};
 
-export default async function LandingPage() {
-  let players: PlayerSummary[] = [];
-  let apiReachable = true;
-  try {
-    players = await api.listPlayers(12);
-  } catch {
-    apiReachable = false;
-  }
-
+export default function LandingPage() {
   return (
-    <div className="space-y-8">
-      <section className="pt-6">
-        <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-          Post-game analytics that go past KDA
+    <div className="space-y-14 py-8">
+      <section className="space-y-5">
+        <h1 className="max-w-3xl text-4xl font-semibold tracking-tight sm:text-5xl">
+          What your replay can actually tell you
         </h1>
-        <p className="mt-3 max-w-2xl text-ink-muted">
-          Rift Lab ingests match history and timeline data, derives higher-order
-          statistics from it, and compares a player against peers who share their
-          role, champion, rank, patch and game length.
+        <p className="max-w-2xl text-lg text-ink-muted">
+          Drop in an <code className="font-mono text-base">.aoe2record</code> file and get
+          your age timings against your opponent&rsquo;s, a curve of everything you left
+          unspent, and your build order — each figure labelled with how it was obtained.
         </p>
-        <div className="mt-5 max-w-xl">
-          <SearchForm autoFocus />
+        <div className="flex flex-wrap gap-3">
+          <Link
+            href="/upload"
+            className="rounded-lg bg-accent px-6 py-3 font-medium text-white transition hover:opacity-90"
+          >
+            Analyse a replay
+          </Link>
+          <Link
+            href="/methodology"
+            className="rounded-lg border border-surface-border px-6 py-3 font-medium transition hover:bg-surface-raised"
+          >
+            How it works
+          </Link>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-          <span>Try:</span>
-          {DEMO_ACCOUNTS.map((account) => (
-            <Link
-              key={account.riotId}
-              href={`/player/${account.platform}/${encodeURIComponent(account.riotId)}`}
-              className="rounded border border-surface-border bg-surface-raised px-2 py-1 hover:border-accent"
+      </section>
+
+      <section className="space-y-5">
+        <h2 className="text-2xl font-semibold">What you get</h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {WORKS.map((f) => (
+            <div
+              key={f.title}
+              className="space-y-2 rounded-lg border border-surface-border bg-surface-raised p-4"
             >
-              {account.riotId}
-              <span className="ml-1.5 text-ink-faint">{account.note}</span>
-            </Link>
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-semibold">{f.title}</h3>
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${TAG_STYLE[f.tag]}`}
+                >
+                  {f.tag}
+                </span>
+              </div>
+              <p className="text-sm text-ink-muted">{f.body}</p>
+            </div>
           ))}
         </div>
-        {!apiReachable && (
-          <Disclaimer>
-            The API is not reachable. Start it with{" "}
-            <code className="font-mono">docker compose up</code> or{" "}
-            <code className="font-mono">make dev</code>.
-          </Disclaimer>
-        )}
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-2">
-        {CAPABILITIES.map((item) => (
-          <Card key={item.title} title={item.title}>
-            <p className="text-sm leading-relaxed text-ink-muted">{item.body}</p>
-          </Card>
-        ))}
+      <section className="space-y-4 rounded-lg border border-surface-border bg-surface-raised/50 p-6">
+        <h2 className="text-2xl font-semibold">What a replay cannot tell you</h2>
+        <p className="max-w-3xl text-ink-muted">
+          A replay is a <strong>command stream</strong>: it records the inputs players sent
+          to the engine, not the outcomes the engine produced. Your build orders and age
+          advances are in there. Unit deaths, kills, and combat results are{" "}
+          <strong>not in the file at all</strong>.
+        </p>
+        <p className="max-w-3xl text-ink-muted">
+          So there is no kill/death ratio here, and no &ldquo;resources destroyed&rdquo;
+          figure. Rather than estimate them and present the guess as a measurement, those
+          metrics report <span className="font-mono text-sm">unavailable</span>. Some game
+          versions also refuse to decode unit-queue commands; when that happens the
+          production numbers say so instead of reporting zero.
+        </p>
       </section>
 
-      {players.length > 0 && (
-        <Card
-          title="Players already analysed"
-          subtitle="Accounts with ingested matches in this instance"
-        >
-          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {players.map((player) => {
-              const rank = player.ranks[0];
-              const riotId =
-                player.game_name && player.tag_line
-                  ? `${player.game_name}#${player.tag_line}`
-                  : player.puuid;
-              return (
-                <li key={player.puuid}>
-                  <Link
-                    href={`/player/${player.platform}/${encodeURIComponent(riotId)}`}
-                    className="flex items-center justify-between rounded border border-surface-border px-3 py-2 text-sm hover:border-accent"
-                  >
-                    <span className="truncate">{riotId}</span>
-                    <span className="ml-2 shrink-0 text-xs text-ink-faint">
-                      {rank ? tierLabel(rank.tier_group) : "—"}
-                    </span>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </Card>
-      )}
-
-      <Card title="Scope and compliance">
-        <ul className="space-y-1.5 text-sm text-ink-muted">
-          <li>
-            Analysis is retrospective, over match history a player can already see
-            for their own games. There is no live-game or spectator integration.
-          </li>
-          <li>
-            No hidden enemy information is exposed, and the risk model is
-            deliberately trained without live enemy positions among its inputs.
-          </li>
-          <li>
-            Model outputs are labelled as estimates and describe association
-            within a historical dataset, not causation.
-          </li>
-        </ul>
-      </Card>
+      <section className="space-y-3">
+        <h2 className="text-2xl font-semibold">Not built yet</h2>
+        <p className="max-w-3xl text-ink-muted">
+          Being straight about the roadmap: peer comparison against an Elo cohort, opening
+          classification beyond the four it currently recognises, and any kind of model-based
+          skill estimate are all <em>planned, not implemented</em>. They need a corpus of
+          analysed games first, which is what the stored-replay index is being built toward.
+        </p>
+      </section>
     </div>
   );
 }

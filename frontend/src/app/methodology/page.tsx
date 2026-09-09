@@ -1,97 +1,182 @@
-import { Card } from "@/components/ui";
+export const metadata = {
+  title: "Methodology",
+  description:
+    "How a replay is parsed, what each metric means, and which questions a replay file cannot answer.",
+};
 
-export const metadata = { title: "Methodology" };
-
-const SECTIONS = [
+const METRICS = [
   {
-    title: "Nothing here is a raw API field",
-    body: [
-      "Riot's match payload is stored faithfully, but it is an input, not the product. Every figure surfaced in the UI is a differential against the lane opponent, a rate, a share, a cohort percentile, or a model output.",
-      "Where a value cannot be computed honestly it is left empty. A game that ended at minute nine has no gold difference at ten, and none is imputed.",
-    ],
+    label: "Feudal / Castle / Imperial Age reached",
+    tag: "observed",
+    body: "Taken from the game's own age transitions as recorded in the replay, not from a research command we have to decode. This is the most reliable figure the file contains. The 'vs opponent' row is the gap to the fastest other player; negative is faster.",
   },
   {
-    title: "Cohorts, and why the comparison is per game",
-    body: [
-      "A number only means something relative to comparable circumstances, so every comparison controls for role, champion, rank band, patch and game length. Fully specifying all five gives the cleanest comparison and the emptiest cohorts, so a chain of progressively broader cohorts is materialised and the narrowest one with enough observations is used. When the fall-back happens, the UI says so.",
-      "Comparisons are made per game, against that game's own cohort, and then summarised. Comparing a player's multi-game average against a distribution of single games is a units error: the mean of n games has a standard error of sigma over root n, so it drifts into the tails far too often and a merely below-average player reads as first percentile.",
-    ],
+    label: "Average / peak banked resources",
+    tag: "inferred",
+    body: "Definitive Edition replays carry periodic sync packets with a per-player resource total. The packet layout is community reverse-engineered rather than documented, and the value combines food, wood, gold and stone — there is no per-type split. Directionally right; not exact.",
   },
   {
-    title: "Resource Conversion Efficiency",
-    body: [
-      "RCE is output share divided by resource share — champion damage share over team gold share. A player who takes 30% of their team's gold and produces 30% of its damage scores 1.0 regardless of how long the game ran or how far ahead the team was, because both sides of the ratio are shares.",
-      "It does not control for champion: a marksman converts gold into damage far better than an enchanter, and that is a property of the pick, not the player. The normalised form is a z-score against the narrowest available champion, role, rank and patch cohort, which removes exactly that.",
-    ],
+    label: "Time above 1000 banked",
+    tag: "inferred",
+    body: "How long you sat on more than roughly a Town Center's worth of unspent resources. Same sync-packet caveat. 1000 is a threshold we chose, not a rule of the game.",
   },
   {
-    title: "Map risk",
-    body: [
-      "Every timeline frame is an exposure — a player at a position, at a time, in a game state — labelled with whether they died within the next thirty seconds. Aggregating over a grid gives an empirical risk surface; a gradient-boosted classifier over the same exposures with richer features gives the per-player figures.",
-      "The model is deliberately restricted to information the player could legitimately have had: their own position, their own team's economy, the clock, the objective state, and events announced to everyone. It is never given live enemy positions, even though the historical timeline contains them. That is partly principle and partly a useful property — a model that never needed hidden information cannot leak it.",
-      "Risk-adjusted deaths are actual deaths minus the deaths the model expected given where and when the player stood. A positive figure points at what happened in those spots, not at the spots themselves.",
-    ],
+    label: "Longest gap between villager queues",
+    tag: "reconstructed",
+    body: "The longest stretch between two villager queue commands. It is a proxy for Town Center idle time, and an imperfect one: a player who queues five villagers at once leaves a long gap while the Town Center is busy the whole time. Treat a large number as a prompt to go look, not as proof.",
   },
   {
-    title: "Roam value",
-    body: [
-      "A roam is detected as consecutive minutes in which a laner is far from their lane centre-line. Timeline frames arrive once per minute, so a sub-thirty-second collapse is invisible; this is a real resolution limit, not a modelling choice.",
-      "Valuation compares what the roam produced against what the player would have gained by staying — using that same player's own median in-lane gold and XP rate in that same game as the baseline, which controls for champion, patch and game state simultaneously. Objective credit is added and a fixed cost per death subtracted. The gold conversions are reasonable constants, not fitted values.",
-    ],
+    label: "Buildings placed / technologies researched",
+    tag: "observed",
+    body: "Counts of build and research commands. A placed foundation can be cancelled or destroyed before it finishes, so this counts intent rather than completed structures.",
   },
   {
-    title: "Skill Gap Analysis",
-    body: [
-      "The question is which measurable behaviours separate rank bands after controlling for what a player picks and when they played. Nothing is hard-coded about what good looks like.",
-      "Each feature is centred on its champion, role, patch and duration control group, with group means shrunk toward broader means in proportion to how little data the group has. A gradient-boosted classifier then predicts rank band from those residuals, cross-validated with GroupKFold on player id so no player appears in both folds — without that the model memorises players rather than behaviours and every score is inflated.",
-      "The headline metric is the Spearman correlation between the true band and the model's probability-weighted expected band. The target is ordinal, so being one band out is a different kind of error from being four out, and argmax accuracy cannot express that. Classes are balanced, so the reference point is a fixed one-over-k rather than the majority share.",
-      "Behaviours are ranked by permutation importance multiplied by how far behind the player is, so a behaviour surfaces only when it both separates ranks and is one this player is actually behind on.",
-    ],
+    label: "Effective APM",
+    tag: "observed",
+    body: "Computed by the mgz parser, which excludes duplicated and spam orders. It measures activity, not skill — a high figure is not automatically better.",
   },
   {
-    title: "Decision Value Added (experimental)",
-    body: [
-      "DVA compares the win-probability change that actually followed a moment against what usually follows historically similar moments, found by nearest neighbours over state vectors drawn from other matches.",
-      "The attribution step is the weak link and is deliberately conservative: win probability is a property of ten players, so a player is credited with only the share of the residual their own involvement in the window supports. That is a heuristic, not an identification strategy. The whole feature is labelled experimental, is excluded from the Skill Gap feature set, and its numbers should be read directionally.",
-    ],
-  },
-  {
-    title: "What this cannot tell you",
-    body: [
-      "All of it is observational. A behaviour that separates ranks may do so because it causes better outcomes, because better players happen to do it, or because both share a cause this data cannot see. No claim of causation is made anywhere, and the phrasing throughout — 'associated with', never 'because' — reflects that.",
-      "Comparisons also cannot see team quality, matchup, communication, or the state a player was in. Those are large and unmeasured.",
-    ],
-  },
-  {
-    title: "Data and compliance",
-    body: [
-      "Only data legitimately available through the public Riot API and match history is used, and all analysis is retrospective. There is no live-game or spectator integration, no automation of gameplay, and nothing surfaced that a player could not have known at the time.",
-      "Without an API key the application serves a deterministic simulator in the same payload shape, so the whole pipeline is runnable and testable without credentials. Simulated matches are clearly a data generator: nothing learned from them says anything about real players.",
-    ],
+    label: "Opening",
+    tag: "reconstructed",
+    body: "The first military production building placed before Castle Age names the opening: Archery Range, Stable, Barracks or Watch Tower. None before Castle reads as a fast castle. It recognises those four cases and reports 'unclassified' otherwise rather than guessing.",
   },
 ];
 
+const TAGS: Record<string, { style: string; meaning: string }> = {
+  observed: {
+    style: "bg-emerald-500/15 text-emerald-500",
+    meaning: "Read directly out of the command stream. Exact.",
+  },
+  reconstructed: {
+    style: "bg-sky-500/15 text-sky-500",
+    meaning: "Derived from observed commands under a stated assumption.",
+  },
+  inferred: {
+    style: "bg-amber-500/15 text-amber-500",
+    meaning:
+      "From sync packets whose field meanings are reverse-engineered. Directionally right, not exact.",
+  },
+  unavailable: {
+    style: "bg-surface-border text-ink-muted",
+    meaning: "Not recoverable from a replay. Reported as null, never as zero.",
+  },
+};
+
 export default function MethodologyPage() {
   return (
-    <div className="space-y-5">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Methodology</h1>
-        <p className="mt-2 max-w-3xl text-ink-muted">
-          How each number on this site is produced, and what it does and does not
-          support.
+    <div className="max-w-3xl space-y-12 py-8">
+      <header className="space-y-2">
+        <h1 className="text-3xl font-semibold tracking-tight">Methodology</h1>
+        <p className="text-ink-muted">
+          What is measured, how, and where the limits are.
         </p>
       </header>
-      {SECTIONS.map((section) => (
-        <Card key={section.title} title={section.title}>
-          <div className="space-y-3">
-            {section.body.map((paragraph, i) => (
-              <p key={i} className="max-w-3xl text-sm leading-relaxed text-ink-muted">
-                {paragraph}
-              </p>
-            ))}
-          </div>
-        </Card>
-      ))}
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold">A replay is a command stream</h2>
+        <p className="text-ink-muted">
+          An <code className="font-mono text-sm">.aoe2record</code> file stores the inputs
+          players sent to the game engine — move here, build there, research this — together
+          with the tick each was sent on. Replaying those inputs against the same engine
+          reproduces the game, which is how the in-game viewer works.
+        </p>
+        <p className="text-ink-muted">
+          The consequence for analysis is the thing worth understanding: the file records{" "}
+          <strong>what players did</strong>, not <strong>what happened</strong>. &ldquo;Queued
+          a villager at 4:32&rdquo; is in there. &ldquo;A villager was created&rdquo; is not,
+          because the queue may be cancelled or the Town Center destroyed. Unit deaths, kills
+          and combat outcomes are absent entirely.
+        </p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold">Every number is labelled</h2>
+        <p className="text-ink-muted">
+          Because the file answers some questions exactly, some approximately and some not at
+          all, each metric carries how it was obtained:
+        </p>
+        <dl className="space-y-3">
+          {Object.entries(TAGS).map(([tag, { style, meaning }]) => (
+            <div key={tag} className="flex gap-3">
+              <dt>
+                <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${style}`}>
+                  {tag}
+                </span>
+              </dt>
+              <dd className="text-sm text-ink-muted">{meaning}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="text-sm text-ink-muted">
+          An unavailable metric renders as the word &ldquo;unavailable&rdquo;, never as a
+          zero or a dash that could be mistaken for a measurement of nothing.
+        </p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold">The metrics</h2>
+        <div className="space-y-5">
+          {METRICS.map((m) => {
+            const tag = TAGS[m.tag]!;
+            return (
+            <div key={m.label} className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold">{m.label}</h3>
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${tag.style}`}
+                >
+                  {m.tag}
+                </span>
+              </div>
+              <p className="text-sm text-ink-muted">{m.body}</p>
+            </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold">When parsing degrades</h2>
+        <p className="text-ink-muted">
+          Action encodings change between game versions, and the parser does not decode every
+          one. Two failure modes are handled explicitly rather than hidden:
+        </p>
+        <ul className="list-inside list-disc space-y-2 text-ink-muted">
+          <li>
+            <strong>Unit-queue commands do not decode.</strong> On some versions these arrive
+            as unparseable actions. Production metrics then report unavailable, and the
+            analysis carries a warning — rather than reporting that you queued no villagers.
+          </li>
+          <li>
+            <strong>A large share of actions do not decode.</strong> Above a quarter, the
+            build-order detail is flagged as incomplete.
+          </li>
+          <li>
+            <strong>The file will not parse at all.</strong> Older versions are rejected with
+            an explanation instead of a generic error.
+          </li>
+        </ul>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold">Determinism</h2>
+        <p className="text-ink-muted">
+          The same file always produces the same analysis: nothing samples, randomises or
+          reads a clock. Re-uploading a file you have already analysed returns the stored
+          result, keyed by the SHA-256 of its bytes.
+        </p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-2xl font-semibold">What is not here yet</h2>
+        <p className="text-ink-muted">
+          Peer comparison against an Elo cohort, scouting and map-control metrics, engagement
+          detection and any model-based skill estimate are <em>not implemented</em>. Several
+          of them are bounded by the command-stream limits above rather than by effort:
+          engagement analysis in particular would require outcome data the file does not
+          contain, so it would have to be inferred from unit movement and stated as such.
+        </p>
+      </section>
     </div>
   );
 }

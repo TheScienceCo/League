@@ -47,3 +47,37 @@ table.data tbody td {
 table.data tbody tr:hover {
   @apply bg-surface-overlay;
 }
+
+/* --- Chart tokens --------------------------------------------------------
+   Categorical slots 1 and 2, validated for colour-vision separation and
+   contrast against both surfaces. Dark values are stepped for the dark
+   surface rather than being an automatic flip of the light ones. */
+.viz-root {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --viz-surface: #fcfcfb;
+  --viz-grid: #e4e4dd;
+  --viz-axis: #c9c9c0;
+  --viz-text: #1a1a19;
+  --viz-text-muted: #6b6b63;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .viz-root {
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --viz-surface: #1a1a19;
+    --viz-grid: #34342f;
+    --viz-axis: #4a4a43;
+    --viz-text: #ffffff;
+    --viz-text-muted: #c3c2b7;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --viz-surface: #1a1a19;
+  --viz-grid: #34342f;
+  --viz-axis: #4a4a43;
+  --viz-text: #ffffff;
+  --viz-text-muted: #c3c2b7;
+}
