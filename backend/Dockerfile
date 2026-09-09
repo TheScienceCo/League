@@ -28,17 +28,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 10001 riftlab
+    && useradd --create-home --uid 10001 aoe2
 
 COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
-COPY --chown=riftlab:riftlab alembic.ini ./
-COPY --chown=riftlab:riftlab alembic ./alembic
-COPY --chown=riftlab:riftlab app ./app
+COPY --chown=aoe2:aoe2 alembic.ini ./
+COPY --chown=aoe2:aoe2 alembic ./alembic
+COPY --chown=aoe2:aoe2 app ./app
 
-RUN mkdir -p /app/models && chown -R riftlab:riftlab /app/models
-USER riftlab
+RUN mkdir -p /data/replays && chown -R aoe2:aoe2 /data/replays
+USER aoe2
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

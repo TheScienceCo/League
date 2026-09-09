@@ -1,7 +1,7 @@
 """Application settings.
 
-All configuration is environment-driven (12-factor). See `.env.example` at the repo
-root for the full documented set of variables.
+All configuration is environment-driven (12-factor). See `.env.example` at the
+repo root for the full documented set of variables.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     # --- App -------------------------------------------------------------
-    app_name: str = "Rift Lab API"
+    app_name: str = "AoE2 Lab API"
     environment: Literal["local", "test", "staging", "production"] = "local"
     debug: bool = True
     api_v1_prefix: str = "/api/v1"
@@ -30,56 +30,38 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # --- Database --------------------------------------------------------
-    database_url: str = "postgresql+psycopg://riftlab:riftlab@localhost:5432/riftlab"
+    database_url: str = "postgresql+psycopg://aoe2:aoe2@localhost:5432/aoe2"
     db_pool_size: int = 10
     db_max_overflow: int = 20
     db_echo: bool = False
 
     # --- Redis -----------------------------------------------------------
+    # Optional. Used for the replay-processing queue and response caching; every
+    # caller degrades gracefully when it is unavailable.
     redis_url: str = "redis://localhost:6379/0"
     cache_ttl_seconds: int = 900
 
-    # --- Riot API --------------------------------------------------------
-    riot_api_key: str = ""
-    # When true (or when no API key is present) the app serves a deterministic
-    # synthetic dataset instead of calling Riot. Everything downstream — ingestion,
-    # feature engineering, ML — is identical, which keeps the project runnable and
-    # testable without credentials.
-    riot_use_mock: bool = True
-    riot_platform: str = "na1"
-    riot_timeout_seconds: float = 10.0
-    riot_max_retries: int = 4
-    # Riot personal-key defaults. Production keys get much higher ceilings; both
-    # windows are enforced together by the sliding-window limiter.
-    riot_rate_limit_short: int = 20  # requests per `riot_rate_limit_short_window`
-    riot_rate_limit_short_window: int = 1  # seconds
-    riot_rate_limit_long: int = 100
-    riot_rate_limit_long_window: int = 120
+    # --- Replay processing ------------------------------------------------
+    replay_storage_path: str = "/data/replays"
+    max_replay_size_mb: int = 100
+    replay_parser_timeout_seconds: int = 300
 
-    # --- Ingestion -------------------------------------------------------
-    ingest_default_match_count: int = 30
-    ingest_max_match_count: int = 200
-    ingest_queue_ids: list[int] = Field(default_factory=lambda: [420, 440, 400])
-    ingest_concurrency: int = 4
+    # --- Analysis ---------------------------------------------------------
+    # Feature version is stamped onto every derived metric row so that a change
+    # to a calculation never silently invalidates historical analyses.
+    analytics_feature_version: int = 1
 
-    # --- ML --------------------------------------------------------------
-    model_dir: str = "/app/models"
-    skill_gap_min_samples: int = 200
-    risk_model_grid_size: int = 32
-    risk_horizon_seconds: int = 30
-
-    @field_validator("cors_origins", "ingest_queue_ids", mode="before")
+    @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
         """Allow `A,B,C` in env vars as well as JSON lists."""
         if isinstance(v, str) and not v.strip().startswith("["):
-            parts = [p.strip() for p in v.split(",") if p.strip()]
-            return parts
+            return [p.strip() for p in v.split(",") if p.strip()]
         return v
 
     @property
-    def use_mock_riot(self) -> bool:
-        return self.riot_use_mock or not self.riot_api_key
+    def max_replay_size_bytes(self) -> int:
+        return self.max_replay_size_mb * 1024 * 1024
 
 
 @lru_cache

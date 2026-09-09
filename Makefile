@@ -1,7 +1,7 @@
-# Rift Lab — common tasks.
+# AoE2 Lab — common tasks.
 #
 #   make up        bring the whole stack up in Docker
-#   make demo      up + seed a demo corpus + train the models
+#   make demo      up, then analyse a replay with `make analyse REC=...`
 #   make test      run the backend suite
 #
 # Targets that talk to the database work against Docker Compose by default.
@@ -48,20 +48,15 @@ logs: ## Tail the api and worker logs
 migrate: ## Apply database migrations
 	$(COMPOSE) exec api alembic upgrade head
 
-.PHONY: seed
-seed: ## Ingest a demo corpus spanning every rank band, then refresh analytics
-	$(COMPOSE) exec worker riftlab seed --accounts 40 --matches 16
-
-.PHONY: refresh
-refresh: ## Rebuild cohorts, the risk surface and the rank-separation model
-	$(COMPOSE) exec worker riftlab refresh-analytics
+.PHONY: analyse
+analyse: ## Analyse a replay: make analyse REC=path/to/game.aoe2record
+	curl -sS -F file=@$(REC) localhost:$(or $(API_PORT),8000)/api/v1/replays | python3 -m json.tool
 
 .PHONY: demo
-demo: up ## One command from nothing to a populated instance
+demo: up ## Bring the whole stack up and wait for it to be healthy
 	@echo "Waiting for the API to become healthy..."
 	@until [ "$$($(COMPOSE) ps -q api | xargs docker inspect -f '{{.State.Health.Status}}')" = "healthy" ]; do sleep 2; done
-	$(MAKE) seed
-	@echo "Open http://localhost:3000 and search for RiftLabDemo#NA1"
+	@echo "Stack is up. Open http://localhost:3000 and upload an .aoe2record file."
 
 # --- Backend ---------------------------------------------------------------
 
@@ -73,10 +68,6 @@ install: ## Create the backend virtualenv and install dependencies
 .PHONY: test
 test: ## Run the fast backend suite
 	$(BACKEND) .venv/bin/python -m pytest -q
-
-.PHONY: test-all
-test-all: ## Run every test, including the slow end-to-end ML suite
-	$(BACKEND) .venv/bin/python -m pytest -q -m ""
 
 .PHONY: lint
 lint: ## Lint and type-check the backend, type-check the frontend

@@ -21,12 +21,12 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: riftlab
-          POSTGRES_PASSWORD: riftlab
-          POSTGRES_DB: riftlab_test
+          POSTGRES_USER: aoe2
+          POSTGRES_PASSWORD: aoe2
+          POSTGRES_DB: aoe2_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U riftlab"
+          --health-cmd "pg_isready -U aoe2"
           --health-interval 5s --health-timeout 5s --health-retries 10
     defaults:
       run:
@@ -63,17 +63,17 @@ jobs:
       # behaviour cannot regress unnoticed.
       - name: Tests against Postgres
         env:
-          TEST_DATABASE_URL: postgresql+psycopg://riftlab:riftlab@localhost:5432/riftlab_test
+          TEST_DATABASE_URL: postgresql+psycopg://aoe2:aoe2@localhost:5432/aoe2_test
         run: pytest -q
 
       # Migrations must both apply and agree with the models, so schema drift
       # fails CI rather than surfacing as a runtime error.
       - name: Migrations apply cleanly and match the models
         env:
-          DATABASE_URL: postgresql+psycopg://riftlab:riftlab@localhost:5432/riftlab_migrations
-          PGPASSWORD: riftlab
+          DATABASE_URL: postgresql+psycopg://aoe2:aoe2@localhost:5432/aoe2_migrations
+          PGPASSWORD: aoe2
         run: |
-          psql -h localhost -U riftlab -d postgres -c "CREATE DATABASE riftlab_migrations;"
+          psql -h localhost -U aoe2 -d postgres -c "CREATE DATABASE aoe2_migrations;"
           alembic upgrade head
           alembic check
 

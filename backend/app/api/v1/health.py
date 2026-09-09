@@ -7,6 +7,7 @@ from app import __version__
 from app.api.deps import DbSession, get_redis
 from app.core.config import settings
 from app.schemas.common import HealthResponse
+from app.services.parser import PARSER_BACKEND
 
 router = APIRouter()
 
@@ -33,5 +34,5 @@ async def health(session: DbSession) -> HealthResponse:
         environment=settings.environment,
         database=database_ok,
         redis=redis_ok,
-        riot_provider="simulated" if settings.use_mock_riot else "riot-api",
+        replay_parser=PARSER_BACKEND,
     )

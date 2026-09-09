@@ -34,5 +34,5 @@ class HealthResponse(APIModel):
     environment: str
     database: bool
     redis: bool
-    #: True when the app is serving simulated data rather than calling Riot.
-    riot_provider: str
+    #: Which replay-parser backend is active (e.g. "mgz").
+    replay_parser: str

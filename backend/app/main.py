@@ -13,26 +13,33 @@ from app.api.v1 import router as v1_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
+from app.services.parser import PARSER_BACKEND
 
 log = get_logger(__name__)
 
 DESCRIPTION = """
-Post-game League of Legends analytics and coaching.
+Age of Empires II replay analytics.
 
-Every figure this API returns is **derived** — differentials against the lane
-opponent, shares, rates, cohort percentiles, and model outputs. Raw Riot fields
-are stored but are not the product.
+Upload an `.aoe2record` file and get back timings, build order, a banked-resource
+curve and plain-language observations about the game.
 
-**Scope and compliance.** All analysis is retrospective, over match history and
-timeline data that a player can already see for their own games. There are no
-live-game or spectator endpoints, nothing is exposed that a player could not
-have known at the time, and no model input uses hidden enemy information. See
-`docs/COMPLIANCE.md`.
+**What a replay can and cannot tell you.** A replay is a *command stream* — the
+inputs players sent to the engine, not the outcomes the engine produced. Age
+advances, buildings placed and technologies researched are all recorded. Unit
+deaths, kills and combat results are **not present in the file at all**, so this
+API does not report them.
 
-**Reading the numbers.** Metrics whose name includes `risk`, `expected`, or which
-appear under `skill-gap` and `dva` are model estimates. They describe association
-within a historical dataset, not causation, and each response carries the caveats
-that apply to it.
+Every metric therefore carries an `availability`:
+
+* `observed` — read directly from the command stream.
+* `reconstructed` — derived from observed commands under a stated assumption.
+* `inferred` — from DE sync packets, whose field meanings are community
+  reverse-engineered rather than documented. Directionally right, not exact.
+* `unavailable` — not recoverable. The value is `null`, never zero.
+
+Some replay versions also fail to decode unit-queue commands; when that happens
+production metrics become `unavailable` and the response carries a `warning`
+saying so.
 """
 
 
@@ -42,7 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info(
         "app.startup",
         environment=settings.environment,
-        riot_provider="simulated" if settings.use_mock_riot else "riot-api",
+        replay_parser=PARSER_BACKEND,
     )
     yield
     log.info("app.shutdown")

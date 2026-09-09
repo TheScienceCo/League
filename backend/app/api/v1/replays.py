@@ -1,129 +1,133 @@
-"""Replay upload and analysis endpoints."""
+"""Replay upload and analysis."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, UploadFile, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from dataclasses import asdict
 
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
+
+from app.api.deps import DbSession
+from app.core.config import settings
 from app.core.logging import get_logger
-from app.schemas.aoe2 import ReplayUploadResponse, ReplayProcessingStatus
-from app.db.models import ReplayFile
+from app.schemas.aoe2 import MatchAnalysisOut, ReplayListItem
+from app.services.analysis import insights, persistence, store
+from app.services.analysis.metrics import analyze
+from app.services.parser import ReplayParseError, get_parser
 
 log = get_logger(__name__)
 
-router = APIRouter(prefix="/replays", tags=["replays"])
+router = APIRouter()
+
+ACCEPTED_SUFFIXES = (".aoe2record", ".mgz", ".mgx", ".aoe2mpgame")
 
 
-@router.post("/upload")
-async def upload_replay(
-    file: UploadFile = File(...),
-    db: AsyncSession | None = None,
-) -> ReplayUploadResponse:
+@router.post(
+    "",
+    response_model=MatchAnalysisOut,
+    summary="Upload a replay and get its analysis",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_replay(session: DbSession, file: UploadFile = File(...)) -> MatchAnalysisOut:
+    """Parse and analyse a replay, returning the full result.
+
+    Analysis is synchronous because it is fast — a 45-minute game parses in a
+    couple of seconds — and a synchronous result means the caller never has to
+    poll. Re-uploading a file you have already analysed returns the stored
+    result rather than reparsing.
     """
-    Upload a replay file for analysis.
-
-    The replay is queued for processing. Status can be checked via
-    GET /api/v1/replays/{replay_id}/status
-
-    Args:
-        file: The .aoe2record replay file
-        db: Database session
-
-    Returns:
-        Upload response with replay ID and status
-    """
-    if not file.filename:
+    filename = file.filename or "replay.aoe2record"
+    if not filename.lower().endswith(ACCEPTED_SUFFIXES):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Filename is required",
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Expected one of {', '.join(ACCEPTED_SUFFIXES)}; got {filename!r}.",
         )
 
-    if not file.filename.endswith((".aoe2record", ".mgz", ".rec")):
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="File is empty.")
+    if len(raw) > settings.max_replay_size_bytes:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be a replay (.aoe2record, .mgz, or .rec)",
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Replay exceeds the {settings.max_replay_size_mb} MB limit.",
         )
+
+    replay_id = store.file_digest(raw)
+    if (cached := store.load(replay_id)) is not None:
+        log.info("replay.cache_hit", replay_id=replay_id)
+        return MatchAnalysisOut.model_validate(cached)
 
     try:
-        # Read file
-        contents = await file.read()
-        file_size_bytes = len(contents)
-
-        if file_size_bytes > 100 * 1024 * 1024:  # 100 MB max
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="Replay file too large (max 100 MB)",
-            )
-
-        # TODO: Calculate file hash and store
-        # TODO: Queue for processing
-        # TODO: Store in database
-
-        log.info(
-            "Replay uploaded",
-            filename=file.filename,
-            size_bytes=file_size_bytes,
-        )
-
-        # For MVP, return success response
-        return ReplayUploadResponse(
-            replay_id=1,  # TODO: Use actual DB ID
-            status="uploaded",
-            message="Replay queued for processing",
-            estimated_processing_time_seconds=60,
-        )
-
-    except Exception as e:
-        log.error("Replay upload failed", error=str(e))
+        parsed = get_parser().parse(raw)
+    except ReplayParseError as exc:
+        # A file we cannot parse is the user's most likely failure mode, so say
+        # what went wrong rather than returning a generic 500.
+        log.warning("replay.parse_failed", filename=filename, error=str(exc))
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to process replay upload",
-        )
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Could not parse {filename!r}. It may be corrupt, or from a game "
+                f"version this parser does not support. ({exc})"
+            ),
+        ) from exc
 
-
-@router.get("/{replay_id}/status")
-async def get_replay_status(
-    replay_id: int,
-    db: AsyncSession | None = None,
-) -> ReplayProcessingStatus:
-    """
-    Get current processing status of a replay.
-
-    Args:
-        replay_id: The replay ID
-        db: Database session
-
-    Returns:
-        Current processing status
-    """
-    # TODO: Fetch from database
-    return ReplayProcessingStatus(
+    analysis = analyze(parsed)
+    payload = _serialise(replay_id, filename, analysis)
+    store.save(replay_id, raw, payload)
+    persistence.index_analysis(session, payload)
+    log.info(
+        "replay.analysed",
         replay_id=replay_id,
-        status="uploaded",
-        progress_percent=0,
-        message="Queued for processing",
-        match_id=None,
-        error=None,
+        map=analysis.map_name,
+        players=len(analysis.players),
+        warnings=len(analysis.warnings),
     )
+    return MatchAnalysisOut.model_validate(payload)
 
 
-@router.get("/{replay_id}/download")
-async def download_replay_result(
-    replay_id: int,
-    db: AsyncSession | None = None,
-):
-    """
-    Download analysis results for a replay (as JSON).
+@router.get("", response_model=list[ReplayListItem], summary="Recently analysed replays")
+async def list_replays(limit: int = 20) -> list[ReplayListItem]:
+    return [
+        ReplayListItem(
+            replay_id=doc["replay_id"],
+            filename=doc["filename"],
+            map_name=doc.get("map_name"),
+            duration_ms=doc["duration_ms"],
+            players=[p["name"] for p in doc.get("players", [])],
+        )
+        for doc in store.list_all(limit=limit)
+    ]
 
-    Args:
-        replay_id: The replay ID
-        db: Database session
 
-    Returns:
-        JSON with full analysis results
-    """
-    # TODO: Fetch from database and return analysis
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Not yet implemented",
-    )
+@router.get("/{replay_id}", response_model=MatchAnalysisOut, summary="Fetch a stored analysis")
+async def get_replay(replay_id: str) -> MatchAnalysisOut:
+    doc = store.load(replay_id)
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No analysis for that id.")
+    return MatchAnalysisOut.model_validate(doc)
+
+
+def _serialise(replay_id: str, filename: str, analysis) -> dict:
+    return {
+        "replay_id": replay_id,
+        "filename": filename,
+        "map_name": analysis.map_name,
+        "duration_ms": analysis.duration_ms,
+        "version": analysis.version,
+        "warnings": analysis.warnings,
+        "players": [
+            {
+                "player_number": p.player_number,
+                "name": p.name,
+                "civilization": p.civilization,
+                "winner": p.winner,
+                "opening": p.opening,
+                "age_timings_ms": p.age_timings_ms,
+                "float_by_age": p.float_by_age,
+                "metrics": {k: asdict(v) for k, v in p.metrics.items()},
+                "build_order": p.build_order,
+                "resource_curve": p.resource_curve,
+                "insights": insights.for_player(analysis, p),
+            }
+            for p in analysis.players
+        ],
+    }

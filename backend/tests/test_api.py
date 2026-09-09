@@ -1,164 +1,90 @@
-"""API contract tests against a seeded database."""
+"""API surface."""
 
 from __future__ import annotations
 
-from sqlalchemy import select
-
-from app.db.models import Match, MatchParticipant
+from app.services.parser.types import Availability
 
 
-def test_health_reports_dependencies(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.get("/api/v1/health")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "ok"
-    assert body["database"] is True
-    assert body["riot_provider"] == "simulated"
+class TestHealth:
+    def test_reports_dependencies(self, client):
+        body = client.get("/api/v1/health").json()
+        assert body["status"] in {"ok", "degraded"}
+        assert body["replay_parser"] == "mgz"
+        assert "database" in body and "redis" in body
 
 
-def test_player_search_resolves_and_persists(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.get(
-        "/api/v1/players/search", params={"riot_id": "ApiTest#NA1", "platform": "na1"}
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["game_name"] == "ApiTest"
-    assert body["tag_line"] == "NA1"
-    assert body["puuid"]
+class TestUpload:
+    def test_upload_returns_analysis(self, client, rec_with_queue):
+        r = client.post("/api/v1/replays", files={"file": ("game.aoe2record", rec_with_queue)})
+        assert r.status_code == 201
+        body = r.json()
+        assert body["map_name"] == "Socotra"
+        assert len(body["replay_id"]) == 64
+        assert len(body["players"]) == 2
+        for p in body["players"]:
+            assert p["name"] and p["civilization"]
+            assert p["resource_curve"]
+            assert p["insights"]
+            assert p["metrics"]["feudal_time"]["availability"] == Availability.OBSERVED
+
+    def test_upload_is_idempotent(self, client, rec_with_queue):
+        f = {"file": ("game.aoe2record", rec_with_queue)}
+        first = client.post("/api/v1/replays", files=f).json()
+        second = client.post(
+            "/api/v1/replays", files={"file": ("other.aoe2record", rec_with_queue)}
+        ).json()
+        assert first["replay_id"] == second["replay_id"]
+
+    def test_analysis_is_retrievable(self, client, rec_with_queue):
+        rid = client.post(
+            "/api/v1/replays", files={"file": ("g.aoe2record", rec_with_queue)}
+        ).json()["replay_id"]
+        got = client.get(f"/api/v1/replays/{rid}")
+        assert got.status_code == 200
+        assert got.json()["replay_id"] == rid
+
+    def test_upload_appears_in_listing(self, client, rec_with_queue):
+        client.post("/api/v1/replays", files={"file": ("g.aoe2record", rec_with_queue)})
+        listing = client.get("/api/v1/replays").json()
+        assert len(listing) == 1
+        assert listing[0]["map_name"] == "Socotra"
+        assert set(listing[0]["players"]) == {"NOT", "El_Matador"}
+
+    def test_warnings_surface_to_caller(self, client, rec_without_queue):
+        body = client.post(
+            "/api/v1/replays", files={"file": ("g.aoe2record", rec_without_queue)}
+        ).json()
+        assert any("queue" in w.lower() for w in body["warnings"])
 
 
-def test_malformed_riot_id_is_a_clean_error(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.get(
-        "/api/v1/players/search", params={"riot_id": "NoTagHere", "platform": "na1"}
-    )
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "not_found"
+class TestUploadErrors:
+    def test_rejects_wrong_extension(self, client):
+        r = client.post("/api/v1/replays", files={"file": ("notes.txt", b"hello")})
+        assert r.status_code == 415
+
+    def test_rejects_empty_file(self, client):
+        r = client.post("/api/v1/replays", files={"file": ("g.aoe2record", b"")})
+        assert r.status_code == 400
+
+    def test_unparseable_file_explains_itself(self, client):
+        r = client.post("/api/v1/replays", files={"file": ("g.aoe2record", b"not a replay")})
+        assert r.status_code == 422
+        assert "could not parse" in r.json()["detail"].lower()
+
+    def test_unknown_id_is_404(self, client):
+        assert client.get("/api/v1/replays/" + "0" * 64).status_code == 404
 
 
-def test_unknown_platform_is_rejected(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.get("/api/v1/players/search", params={"riot_id": "A#B", "platform": "mars1"})
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
+class TestPersistence:
+    def test_upload_is_indexed_for_querying(self, client, session, rec_with_queue):
+        from sqlalchemy import select
 
+        from app.db.models import Replay, ReplayPlayer
 
-def test_unknown_player_profile_is_404(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.get("/api/v1/players/does-not-exist")
-    assert response.status_code == 404
-    assert "error" in response.json()
+        client.post("/api/v1/replays", files={"file": ("g.aoe2record", rec_with_queue)})
+        replay = session.scalar(select(Replay))
+        assert replay is not None and replay.map_name == "Socotra"
 
-
-def test_profile_and_matches(client, seeded_db) -> None:  # type: ignore[no-untyped-def]
-    puuid = seeded_db.scalar(select(MatchParticipant.puuid))
-    profile = client.get(f"/api/v1/players/{puuid}")
-    assert profile.status_code == 200
-    body = profile.json()
-    assert body["games_analyzed"] > 0
-    assert body["player"]["puuid"] == puuid
-    assert isinstance(body["headline_metrics"], list)
-
-    matches = client.get(f"/api/v1/players/{puuid}/matches", params={"limit": 5})
-    assert matches.status_code == 200
-    page = matches.json()
-    assert page["total"] >= len(page["items"])
-    for item in page["items"]:
-        assert item["match_id"]
-        assert item["team_position"]
-
-
-def test_match_analysis_requires_a_participant(client, seeded_db) -> None:  # type: ignore[no-untyped-def]
-    match_id = seeded_db.scalar(select(Match.match_id))
-    response = client.get(
-        f"/api/v1/matches/{match_id}", params={"puuid": "someone-who-did-not-play"}
-    )
-    assert response.status_code == 404
-
-
-def test_match_analysis_payload_is_complete(client, seeded_db) -> None:  # type: ignore[no-untyped-def]
-    row = seeded_db.execute(
-        select(MatchParticipant.match_id, MatchParticipant.puuid).limit(1)
-    ).one()
-    response = client.get(f"/api/v1/matches/{row.match_id}", params={"puuid": row.puuid})
-    assert response.status_code == 200
-    body = response.json()
-
-    assert body["match"]["match_id"] == row.match_id
-    assert body["player"]["puuid"] == row.puuid
-    assert len(body["participants"]) == 10
-    assert len(body["timeline"]) > 0
-    assert isinstance(body["deaths"], list)
-    assert isinstance(body["objective_setups"], list)
-    assert isinstance(body["roams"], list)
-    assert isinstance(body["advanced_metrics"], list)
-
-    # The timeline carries the derived differentials, not just raw totals.
-    point = body["timeline"][-1]
-    assert {"minute", "gold", "xp", "cs", "gold_diff", "team_gold_diff"} <= set(point)
-
-
-def test_advanced_stats_needs_ingested_games(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.get("/api/v1/players/nobody/advanced")
-    assert response.status_code == 404
-
-
-def test_skill_gap_reports_missing_model_clearly(client, seeded_db) -> None:  # type: ignore[no-untyped-def]
-    """With no trained model the API must say so, not return zeros."""
-    puuid = seeded_db.scalar(select(MatchParticipant.puuid))
-    response = client.get(f"/api/v1/players/{puuid}/skill-gap")
-    assert response.status_code == 409
-    body = response.json()
-    assert body["error"]["code"] == "insufficient_data"
-    assert "train" in body["error"]["message"].lower()
-
-
-def test_spatial_endpoints_carry_a_disclaimer(client) -> None:  # type: ignore[no-untyped-def]
-    """Model-derived figures must always be labelled as estimates."""
-    heatmap = client.get("/api/v1/spatial/heatmap", params={"role": "MIDDLE"})
-    assert heatmap.status_code == 200
-    assert "association" in heatmap.json()["disclaimer"].lower()
-
-    zones = client.get("/api/v1/spatial/zones", params={"role": "MIDDLE"})
-    assert zones.status_code == 200
-    assert zones.json()["disclaimer"]
-
-
-def test_ingest_requires_an_identifier(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.post("/api/v1/ingest", json={"platform": "na1", "count": 5})
-    assert response.status_code == 422
-
-
-def test_ingest_job_lifecycle(client) -> None:  # type: ignore[no-untyped-def]
-    response = client.post(
-        "/api/v1/ingest",
-        json={"riot_id": "JobTest#NA1", "platform": "na1", "count": 2},
-    )
-    assert response.status_code == 202
-    job = response.json()
-    assert job["id"]
-    assert job["status"] in {"PENDING", "RUNNING", "SUCCEEDED", "PARTIAL"}
-
-    polled = client.get(f"/api/v1/ingest/{job['id']}")
-    assert polled.status_code == 200
-    assert polled.json()["id"] == job["id"]
-
-    assert client.get("/api/v1/ingest/no-such-job").status_code == 404
-
-
-def test_openapi_documents_every_route(client) -> None:  # type: ignore[no-untyped-def]
-    schema = client.get("/openapi.json").json()
-    paths = set(schema["paths"])
-    expected = {
-        "/api/v1/health",
-        "/api/v1/players/search",
-        "/api/v1/players/{puuid}",
-        "/api/v1/players/{puuid}/matches",
-        "/api/v1/players/{puuid}/advanced",
-        "/api/v1/players/{puuid}/cohort",
-        "/api/v1/players/{puuid}/spatial",
-        "/api/v1/players/{puuid}/skill-gap",
-        "/api/v1/matches/{match_id}",
-        "/api/v1/spatial/heatmap",
-        "/api/v1/spatial/zones",
-        "/api/v1/skill-gap/rank-separation",
-        "/api/v1/ingest",
-    }
-    assert expected <= paths
+        names = set(session.scalars(select(ReplayPlayer.name)))
+        assert names == {"NOT", "El_Matador"}
+        assert all(p.feudal_ms for p in replay.players)
